@@ -1,0 +1,11 @@
+# project
+userdata/
+logs/
+
+# development
+__pycache__/
+.venv/
+.vscode/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
