@@ -1,0 +1,5 @@
+name: example
+parse:
+  - template: "{category} - {index} - {title}"
+render:
+  - template: '{index:zpad(3)}_{category}_{title:replace(" ", "_")}'

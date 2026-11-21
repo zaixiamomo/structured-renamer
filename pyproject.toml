@@ -4,82 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "structured-renamer"
-version = "0.1.0"
-description = "领域插件化的文件结构化重命名工具"
+dynamic = ["version"]
+description = "A structured file renaming tool."
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0",
-    "tomli>=2.0; python_version < '3.11'",
-    "tomli-w>=1.2",
+    "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
-renamer = "renamer.cli.main:main"
+sr = "sr.cli.main:main"
 
-[project.optional-dependencies]
-gui = [
-    "pyside6>=6.6",
-]
-
-[dependency-groups]
-dev = [
-    "import-linter>=2.14",
-    "pytest>=8.0",
-    "radon>=6.0.1",
-    "ruff>=0.16.5",
-    "vulture>=2.16",
-]
+[tool.hatch.version]
+path = "sr/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["renamer"]
+packages = ["sr"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/integration"]
-pythonpath = ["."]
-
-[tool.importlinter]
-root_packages = ["renamer"]
-
-[[tool.importlinter.contracts]]
-name = "分层依赖（顶层只向下）"
-type = "layers"
-layers = [
-    "renamer.cli | renamer.gui",
-    "renamer.app",
-    "renamer.adapters",
-    "renamer.plugins",
-    "renamer.core",
-]
-
-[[tool.importlinter.contracts]]
-name = "CLI/GUI 不摸 core 深层（只留 core.model 共享叶）"
-type = "forbidden"
-source_modules = ["renamer.cli", "renamer.gui"]
-forbidden_modules = [
-    "renamer.core.source",
-    "renamer.core.compile",
-    "renamer.core.runtime",
-    "renamer.core.plugins",
-    "renamer.core.codec",
-    "renamer.core.dsl",
-]
-allow_indirect_imports = true
-
-[[tool.importlinter.contracts]]
-name = "core：运行层、独立功能模块、基础工具、声明模型"
-type = "layers"
-layers = [
-    "renamer.core.runtime",
-    "renamer.core.compile | renamer.core.source | renamer.core.codec | renamer.core.plugins",
-    "renamer.core.ports | renamer.core.dsl",
-    "renamer.core.model",
-]
-
-[[tool.importlinter.contracts]]
-name = "运行层不负责草稿、持久化或插件装配"
-type = "forbidden"
-source_modules = ["renamer.core.runtime"]
-forbidden_modules = ["renamer.core.source", "renamer.core.codec", "renamer.core.plugins"]
-
-[tool.ruff]
-line-length = 88
