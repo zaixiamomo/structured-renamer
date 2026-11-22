@@ -4,7 +4,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
 
-from sr.app.models import DirectoryState, FileStamp
+from sr.app.models import FileStamp, Ledger
 from sr.core.compile.rule import Rule
 
 
@@ -65,9 +65,7 @@ class FileSystem(Protocol):
         """
         ...
 
-    def scan(
-        self, directory: Path, excluded: tuple[Path, ...]
-    ) -> tuple[Path, ...]:
+    def scan(self, directory: Path, excluded: tuple[Path, ...]) -> tuple[Path, ...]:
         """递归收集普通文件。
 
         Args:
@@ -132,39 +130,46 @@ class FileSystem(Protocol):
 
 
 class StateStore(Protocol):
-    """目录状态持久化契约。"""
+    """全局账本存储；load/save 的调用方必须持锁。"""
 
-    def lock(self, directory: Path) -> AbstractContextManager[None]:
-        """获取状态存储的互斥访问权。
+    def validate_target(self, directory: Path) -> None:
+        """拒绝状态目录落入改名扫描范围。
 
         Args:
-            directory: 本次操作目录；状态存储须位于其外部。
-        Yields:
-            None；读取、文件操作和写回应在同一上下文内完成。
+            directory: 待改名的扫描根目录。
         Raises:
-            ApplicationError: 锁冲突、状态存储位置无效，或重叠目录存在未完成操作。
+            ApplicationError: 状态目录位于扫描根目录内。
         """
         ...
 
-    def load(self, directory: Path) -> DirectoryState:
-        """读取目录状态。
+    def lock(self) -> AbstractContextManager[None]:
+        """获取覆盖账本读取、文件移动和提交的全局进程锁。
 
-        Args:
-            directory: 待读取状态的目录；调用方须已持锁。
         Returns:
-            DirectoryState；无记录时为空状态。
+            退出时释放锁的上下文管理器。
         Raises:
-            ApplicationError: 状态记录损坏或版本不兼容。
+            ApplicationError: 其他进程正在使用状态。
+            OSError: 无法访问锁文件。
         """
         ...
 
-    def save(self, state: DirectoryState) -> None:
-        """校验并原子替换目录状态。
+    def load(self) -> Ledger:
+        """持锁读取全局账本。
+
+        Returns:
+            当前账本；无记录时返回空账本。
+        Raises:
+            ApplicationError: 状态损坏或格式不兼容。
+            OSError: 无法读取状态文件。
+        """
+        ...
+
+    def save(self, ledger: Ledger) -> None:
+        """持锁原子保存全局账本。
 
         Args:
-            state: 完整的 DirectoryState，含撤销记录和未完成操作；调用方须已持锁。
-                不保存 RenamePlan 或 ExecutionReport。
+            ledger: 待提交的完整账本快照。
         Raises:
-            OSError: 写入或替换失败，原状态文件保持不变。
+            OSError: 保存失败；调用方须持锁重读以确认提交结果。
         """
         ...

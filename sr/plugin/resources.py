@@ -52,7 +52,6 @@ class MediaProbe(Protocol):
         ...
 
 
-# 资源名到实例的只读映射。
 ResourceValues = Mapping[str, HttpClient | MediaProbe]
 
 

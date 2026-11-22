@@ -1,5 +1,3 @@
-"""基于本地文件系统的 FileSystem 实现。"""
-
 import ctypes
 import errno
 import os
@@ -142,7 +140,16 @@ class LocalFileSystem:
         return tuple(sorted(files, key=str))
 
     def stat(self, path: Path) -> FileStamp:
-        """采集用于检测文件变化的身份与时间戳。"""
+        """采集用于检测文件变化的身份与时间戳。
+
+        Args:
+            path: 普通文件路径，文件与父目录都不能是链接或重解析点。
+        Returns:
+            文件与父目录身份、大小和修改时间的快照。
+        Raises:
+            ValueError: 文件或父目录类型不符。
+            OSError: 无法读取状态或文件系统未提供可靠身份。
+        """
         parent = _directory_id(path.parent)
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or _is_link(info):
@@ -154,7 +161,16 @@ class LocalFileSystem:
         )
 
     def key(self, path: Path) -> tuple[int, int, str]:
-        """返回用于判重的 (父目录标识, 大小写折叠名称)。"""
+        """生成文件名称位置的比较键。
+
+        Args:
+            path: 待比较路径；父目录须存在，文件本身可以不存在。
+        Returns:
+            父目录设备号、inode 与按目录大小写规则处理的文件名。
+        Raises:
+            ValueError: 父目录不是普通目录。
+            OSError: 无法取得目录身份或查询大小写规则。
+        """
         parent = _directory_id(path.parent)
         name = path.name
         if not _case_sensitive(path.parent):

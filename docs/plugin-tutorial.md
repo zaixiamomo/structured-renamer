@@ -194,13 +194,7 @@ render:
 运行预览：
 
 ```powershell
-.\.venv\Scripts\sr.exe --dir demo\examples --rule demo\rule.yaml --dry-out
-```
-
-应看到：
-
-```text
-Sample A.txt -> Archive_Sample A.txt
+.\.venv\Scripts\sr.exe run --dir demo\examples --rule demo\rule.yaml --dry-run
 ```
 
 ## 8. 系统字段
@@ -275,7 +269,7 @@ class Example(Extender):
 - `media`：`probe(path)`，返回 `ffprobe` 的 JSON 结果；需要 PATH 中有 `ffprobe`。
 - `ffprobe` 是外部程序，不属于 Python 依赖，需要在插件安装说明中列给用户。
 - 资源由主程序创建和关闭，插件不要自行关闭。
-- 预览也会执行能力，因此 `--dry-out` 仍可能发起网络请求或调用 `ffprobe`。
+- 预览也会执行能力，因此 `--dry-run` 仍可能发起网络请求或调用 `ffprobe`。
 - 媒体探测失败应报错，不要静默返回空值。
 
 `create` 的实例在一批任务中共享，可能被不同组并发调用；资源引用可以保存在实例上，但每次调用的数据不要保存。

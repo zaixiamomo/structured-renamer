@@ -1,11 +1,9 @@
-"""组装默认适配器与应用服务。"""
-
 from sr.adapters.filesystem import LocalFileSystem
 from sr.adapters.http_client import JsonHttpClient
 from sr.adapters.media_probe import FfprobeClient
 from sr.adapters.state_store import LocalStateStore
 from sr.adapters.yaml_codec import YamlCodec
-from sr.app.rename_service import RenameService
+from sr.app.service import RenameService
 from sr.core.strategies.extenders import DOMAIN as BUILTIN
 from sr.plugin import ExtenderResources, PluginCatalog
 from sr.settings import Settings

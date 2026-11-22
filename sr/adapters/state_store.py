@@ -1,74 +1,43 @@
-"""以 JSON 文件保存目录改名状态。"""
-
-import hashlib
 import json
 import os
-from contextlib import contextmanager
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict
 
 from sr.app.errors import ApplicationError
-from sr.app.models import (
-    DirectoryState,
-    FileChange,
-    RenameOperation,
-)
-
-
-class _State(BaseModel):
-    """状态文件的版本化序列化模型。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    # 版本 3 为当前格式；不兼容版本在 _decode 中直接拒绝。
-    version: Literal[3]
-    directory: Path
-    undo: tuple[FileChange, ...]
-    active: RenameOperation | None
-
-    def restore(self) -> DirectoryState:
-        """转换为应用层 DirectoryState。"""
-        return DirectoryState(
-            directory=self.directory,
-            undo=self.undo,
-            active=self.active,
-        )
-
-
-def _decode(text: str) -> DirectoryState:
-    """解析并校验状态文件文本。"""
-    document = json.loads(text)
-    if not isinstance(document, dict) or type(document.get("version")) is not int:
-        raise ValueError("状态文件缺少有效版本")
-    if document["version"] != 3:
-        raise ValueError("不支持此状态文件版本")
-    return _State.model_validate_json(text).restore()
+from sr.app.models import Batch, Change, FileStamp, Ledger, StoredError
 
 
 class LocalStateStore:
-    """带进程锁和原子写入的本地状态存储。"""
+    """使用全局锁和原子写入的本地账本存储。"""
 
     def __init__(self, directory: Path) -> None:
-        """规范化并保存状态目录路径。"""
+        """展开并解析账本存储目录。"""
         self.directory = directory.expanduser().resolve()
 
-    @contextmanager
-    def lock(self, directory: Path):
-        """锁定状态目录并检查跨目录未完成操作。
+    def validate_target(self, directory: Path) -> None:
+        """拒绝状态目录落入改名扫描范围。
 
         Args:
-            directory: 当前命令要处理的目录。
-        Yields:
-            持锁期间执行调用方逻辑。
+            directory: 待改名的扫描根目录。
         Raises:
-            ApplicationError: 状态目录位于待处理目录内、已有进程持锁，或存在重叠目录的未完成操作。
+            ApplicationError: 状态目录位于扫描根目录内。
         """
         canonical = directory.resolve()
         if self.directory == canonical or self.directory.is_relative_to(canonical):
             raise ApplicationError("状态目录不能放在待改名目录内")
+
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        """获取全局进程锁，覆盖读取、移动和提交。
+
+        Yields:
+            持锁期间执行调用方逻辑。
+        Raises:
+            ApplicationError: 另一个 sr 进程正在使用状态。
+        """
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / "state.lock").open("a+b") as handle:
             handle.seek(0, os.SEEK_END)
@@ -91,7 +60,6 @@ class LocalStateStore:
                     "另一个 sr 命令正在使用状态，请稍后重试"
                 ) from exc
             try:
-                self._check_recovery(directory)
                 yield
             finally:
                 handle.seek(0)
@@ -100,64 +68,44 @@ class LocalStateStore:
                 else:
                     fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def _path(self, directory: Path) -> Path:
-        """返回目录对应的状态文件名。"""
-        # 文件名取规范路径的 SHA-256，避免路径字符进入文件名。
-        key = hashlib.sha256(str(directory.resolve()).encode("utf-8")).hexdigest()
-        return self.directory / f"{key}.json"
-
-    def _check_recovery(self, directory: Path) -> None:
-        """拒绝重叠目录的未完成操作，并校验其他状态文件。"""
-        canonical = directory.resolve()
-        current = self._path(directory)
-        for path in self.directory.glob("*.json"):
-            if path == current:
-                continue
-            try:
-                record = _decode(path.read_text(encoding="utf-8"))
-                other = record.directory.resolve()
-            except (ValueError, TypeError) as exc:
-                raise ApplicationError(f"状态文件损坏或版本不兼容：{path}") from exc
-            # 只阻止与未完成操作目录重叠的命令；已结算记录可以共存。
-            if record.active is not None and (
-                canonical.is_relative_to(other) or other.is_relative_to(canonical)
-            ):
-                raise ApplicationError(
-                    f"重叠目录尚未恢复，请先对 {record.directory} 执行 --undo"
-                )
-
-    def load(self, directory: Path) -> DirectoryState:
-        """读取目录状态。
+    def load(self) -> Ledger:
+        """持锁读取全局账本。
 
         Returns:
-            已保存的 DirectoryState；无记录时返回空状态。
+            从状态文件恢复的账本；状态文件不存在时返回空账本。
         Raises:
-            ApplicationError: 文件损坏、版本不兼容或目录不匹配。
+            ApplicationError: 发现旧版状态或状态文件损坏。
+            OSError: 状态文件无法读取。
         """
-        path = self._path(directory)
+        legacy = self._legacy_path()
+        if legacy is not None:
+            raise ApplicationError(
+                f"发现旧版目录状态：{legacy}；请使用旧版处理或备份旧状态后选择新的 SR_STATE_DIR"
+            )
+        path = self.directory / "state.json"
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return DirectoryState(directory)
+            return Ledger()
         try:
-            state = _decode(text)
-            if state.directory.resolve() != directory.resolve():
-                raise ValueError("状态目录不匹配")
-            return state
-        except (ValueError, TypeError) as exc:
-            raise ApplicationError(f"状态文件损坏或版本不兼容：{path}") from exc
+            document = json.loads(text)
+            if not isinstance(document, dict):
+                raise TypeError("状态文件缺少对象")
+            return _decode_ledger(document.get("ledger"))
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ApplicationError(f"状态文件损坏或格式不兼容：{path}") from exc
 
-    def save(self, state: DirectoryState) -> None:
-        """原子写入状态，避免中断产生半截 JSON。"""
-        data = _State(
-            version=3,
-            directory=state.directory,
-            undo=state.undo,
-            active=state.active,
-        ).model_dump(mode="json")
-        text = json.dumps(data, ensure_ascii=True, indent=2)
-        # 写前严格回读，确保序列化结果能被当前版本接受。
-        _State.model_validate_json(text).restore()
+    def save(self, ledger: Ledger) -> None:
+        """校验编码结果后原子写入 state.json。
+
+        Args:
+            ledger: 待保存的完整账本。
+        Raises:
+            OSError: 写入或替换失败，原状态文件保持不变。
+        """
+        document = {"ledger": _encode_ledger(ledger)}
+        text = json.dumps(document, ensure_ascii=False, indent=2)
+        _decode_ledger(document["ledger"])
         temporary = None
         try:
             with NamedTemporaryFile(
@@ -172,7 +120,218 @@ class LocalStateStore:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self._path(state.directory))
+            os.replace(temporary, self.directory / "state.json")
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+
+    def _legacy_path(self) -> Path | None:
+        """查找旧版按目录保存的 SHA-256 十六进制状态文件。"""
+        return next(
+            (
+                p
+                for p in self.directory.glob("*.json")
+                if len(p.stem) == 64 and all(c in "0123456789abcdef" for c in p.stem)
+            ),
+            None,
+        )
+
+
+def _encode_ledger(ledger: Ledger) -> dict[str, object]:
+    """把账本转换为 JSON 对象。"""
+    return {
+        "batches": [_encode_batch(batch) for batch in ledger.batches],
+        "redo_stack": list(ledger.redo_stack),
+    }
+
+
+def _encode_batch(batch: Batch) -> dict[str, object]:
+    """把批次转换为 JSON 对象。"""
+    return {
+        "id": batch.id,
+        "dir": str(batch.dir),
+        "direction": batch.direction,
+        "status": batch.status,
+        "updated": batch.updated.isoformat(),
+        "changes": [_encode_change(change) for change in batch.changes],
+    }
+
+
+def _encode_change(change: Change) -> dict[str, object]:
+    """把逐文件改动转换为 JSON 对象。"""
+    return {
+        "source": str(change.source),
+        "target": None if change.target is None else str(change.target),
+        "temporary": (None if change.temporary is None else str(change.temporary)),
+        "stamp": {
+            "parent": list(change.stamp.parent),
+            "file": list(change.stamp.file),
+            "size": change.stamp.size,
+            "modified_ns": change.stamp.modified_ns,
+        },
+        "error": _encode_error(change.error),
+    }
+
+
+def _encode_error(error: Exception | None) -> dict[str, object] | None:
+    """把异常归一为可序列化的类型、消息和文件错误信息。"""
+    if error is None:
+        return None
+    stored = StoredError.from_error(error)
+    document: dict[str, object] = {"type": stored.type_name, "message": str(stored)}
+    if stored.stage is not None:
+        document["stage"] = stored.stage
+    if stored.cause_type is not None:
+        document["cause_type"] = stored.cause_type
+    return document
+
+
+def _decode_ledger(value: object) -> Ledger:
+    """从 JSON 对象恢复账本。"""
+    data = _mapping(value, "ledger")
+    batches = tuple(
+        _decode_batch(item) for item in _list(data.get("batches"), "batches")
+    )
+    stack = tuple(
+        _string(item, "redo_stack")
+        for item in _list(data.get("redo_stack"), "redo_stack")
+    )
+    return Ledger(batches, stack)
+
+
+def _decode_batch(value: object) -> Batch:
+    """从 JSON 对象恢复批次。"""
+    data = _mapping(value, "batch")
+    return Batch(
+        id=_string(data.get("id"), "id"),
+        dir=Path(_string(data.get("dir"), "dir")),
+        direction=_direction(data.get("direction")),
+        status=_status(data.get("status")),
+        updated=_datetime(data.get("updated")),
+        changes=tuple(
+            _decode_change(item) for item in _list(data.get("changes"), "changes")
+        ),
+    )
+
+
+def _decode_change(value: object) -> Change:
+    """从 JSON 对象恢复逐文件改动。"""
+    data = _mapping(value, "change")
+    return Change(
+        source=Path(_string(data.get("source"), "source")),
+        target=_optional_path(data.get("target"), "target"),
+        temporary=_optional_path(data.get("temporary"), "temporary"),
+        stamp=_decode_stamp(data.get("stamp")),
+        error=_decode_error(data.get("error")),
+    )
+
+
+def _decode_stamp(value: object) -> FileStamp:
+    """从 JSON 对象恢复文件快照。"""
+    data = _mapping(value, "stamp")
+    return FileStamp(
+        parent=_pair(data.get("parent"), "parent"),
+        file=_pair(data.get("file"), "file"),
+        size=_integer(data.get("size"), "size"),
+        modified_ns=_integer(data.get("modified_ns"), "modified_ns"),
+    )
+
+
+def _decode_error(value: object) -> StoredError | None:
+    """从 JSON 对象恢复错误。"""
+    if value is None:
+        return None
+    data = _mapping(value, "error")
+    return StoredError(
+        _string(data.get("type"), "error.type"),
+        _text(data.get("message"), "error.message"),
+        stage=_optional_text(data.get("stage"), "error.stage"),
+        cause_type=_optional_text(data.get("cause_type"), "error.cause_type"),
+    )
+
+
+def _mapping(value: object, name: str) -> Mapping[str, object]:
+    """要求对象是字符串键映射。"""
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} 必须是对象")
+    if any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{name} 的键必须是字符串")
+    return value
+
+
+def _list(value: object, name: str) -> list[object]:
+    """要求值是数组。"""
+    if not isinstance(value, list):
+        raise TypeError(f"{name} 必须是数组")
+    return value
+
+
+def _string(value: object, name: str) -> str:
+    """要求值是非空字符串。"""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} 必须是字符串")
+    if not value:
+        raise ValueError(f"{name} 必须是非空字符串")
+    return value
+
+
+def _text(value: object, name: str) -> str:
+    """要求值是字符串，允许为空。"""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} 必须是字符串")
+    return value
+
+
+def _optional_text(value: object, name: str) -> str | None:
+    """要求值是可空字符串。"""
+    if value is None:
+        return None
+    return _text(value, name)
+
+
+def _integer(value: object, name: str) -> int:
+    """要求值是整数。"""
+    if type(value) is not int:
+        raise TypeError(f"{name} 必须是整数")
+    return value
+
+
+def _pair(value: object, name: str) -> tuple[int, int]:
+    """要求值是两个整数。"""
+    items = _list(value, name)
+    if len(items) != 2:
+        raise ValueError(f"{name} 必须有两个整数")
+    return _integer(items[0], name), _integer(items[1], name)
+
+
+def _optional_path(value: object, name: str) -> Path | None:
+    """要求值是可空路径字符串。"""
+    if value is None:
+        return None
+    return Path(_string(value, name))
+
+
+def _direction(value: object) -> str:
+    """校验批次方向。"""
+    if value not in ("forward", "backward"):
+        raise ValueError("direction 必须是 forward 或 backward")
+    return value
+
+
+def _status(value: object) -> str:
+    """校验批次状态。"""
+    if value not in ("running", "completed"):
+        raise ValueError("status 必须是 running 或 completed")
+    return value
+
+
+def _datetime(value: object) -> datetime:
+    """解析带时区的 ISO 时间。"""
+    text = _string(value, "updated")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("时间必须包含时区")
+    return parsed

@@ -1,5 +1,3 @@
-"""调用 ffprobe 探测媒体信息。"""
-
 import json
 import math
 import subprocess

@@ -1,5 +1,3 @@
-"""运行配置与默认状态目录。"""
-
 import os
 import sys
 from dataclasses import dataclass, field

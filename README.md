@@ -1,6 +1,6 @@
 # structured-renamer
 
-结构化批量重命名工具：通过 YAML 规则从文件名中提取字段，再组合成统一的新名称，支持预览、执行与撤销。
+结构化批量重命名工具：通过 YAML 规则从文件名中提取字段，再组合成统一的新名称，支持预览、执行、撤销与重做。
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -12,9 +12,10 @@
 `demo/` 是一个最小示例，仅演示字段换位、序号补零和空格替换：
 
 ```text
-Alpha - 1 - Sample A.txt  -> 001_Alpha_Sample_A.txt
-Alpha - 12 - Sample B.txt -> 012_Alpha_Sample_B.txt
-Beta - 3 - Sample C.txt   -> 003_Beta_Sample_C.txt
+demo/examples
+├── Alpha - 1 - Sample A.txt   ->  001_Alpha_Sample_A.txt
+├── Alpha - 12 - Sample B.txt  ->  012_Alpha_Sample_B.txt
+└── Beta - 3 - Sample C.txt    ->  003_Beta_Sample_C.txt
 ```
 
 `demo/rule.yaml`：
@@ -32,7 +33,7 @@ render:
 安装后可运行以下命令预览示例：
 
 ```powershell
-sr --dir demo/examples --rule demo/rule.yaml --dry-out
+sr run --dir demo/examples --rule demo/rule.yaml --dry-run
 ```
 
 第一次编写规则可阅读[规则教程](docs/rule-tutorial.md)；完整语法与约定见[规则参考手册](docs/rule-reference.md)。
@@ -61,21 +62,29 @@ sr --version
 卸载：
 
 ```powershell
-`uv tool uninstall structured-renamer`。
+uv tool uninstall structured-renamer
 ```
 
 ## 使用
 
 ```powershell
 sr --version
-sr --dir DIRECTORY --rule RULE_FILE --dry-out
-sr --dir DIRECTORY --rule RULE_FILE
-sr --dir DIRECTORY --undo
+sr run --dir DIRECTORY --rule RULE_FILE --dry-run [--no-color]
+sr run --dir DIRECTORY --rule RULE_FILE [--no-color]
+sr undo [--id ID] [--dry-run] [--no-color]
+sr redo [--id ID] [--dry-run] [--no-color]
+sr log [--dir DIRECTORY | --id ID] [--no-color]
 ```
 
-`--dry-out` 只预览，不修改文件；去掉它正式执行。`--undo` 撤销该目录上一批实际改名。
+`run` 按规则生成改名计划。`--dry-run` 只预览，不修改文件；正式执行时，单个文件失败不会影响其他文件。存在未完成批次时，`run` 会停止执行，包括 `--dry-run` 预览，并打印该批次的摘要和恢复命令。
+
+`undo` 撤销最近一次完成的改名，`redo` 重做最近一次撤销；两者用 `--id` 指定批次，省略时分别选择最新完成批次和 redo 栈顶批次。存在未完成批次时，二者会优先恢复该批次。`--id` 接受完整 ID 或唯一前缀，前缀不区分大小写；匹配多个批次时会列出候选并拒绝执行。
+
+`log` 从新到旧列出批次，默认显示 `状态 | 8 位短 ID | 本地时间 | 目录`，可用 `--dir` 过滤目录，或用 `--id` 查看指定批次的文件树。状态包括 `已完成`、`可重做`、`已撤销` 和 `未完成`。
+
+`--no-color` 关闭彩色输出，默认按终端能力自动判断；`log` 只给状态字段着色，提示信息使用黄色，意外错误使用红色。
 状态默认保存在用户应用数据目录，可用 `SR_STATE_DIR` 指定。
-退出码：0 成功，1 运行错误，2 参数错误。
+退出码：0 成功，1 运行错误，2 参数错误，130 安全取消。
 
 ## 插件
 

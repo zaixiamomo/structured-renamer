@@ -21,7 +21,16 @@ class _Loader(yaml.SafeLoader):
     """禁止 YAML 锚点、别名、显式标签和重复键的加载器。"""
 
     def compose_node(self, parent, index):
-        """拒绝可能造成展开或注入的 YAML 节点特性。"""
+        """拒绝可能造成展开或注入的 YAML 节点特性。
+
+        Args:
+            parent: PyYAML 提供的父节点。
+            index: 节点在父容器中的位置。
+        Returns:
+            由 SafeLoader 构造的节点。
+        Raises:
+            ComposerError: 节点使用锚点、别名或显式标签。
+        """
         event = self.peek_event()
         if (
             isinstance(event, AliasEvent)
@@ -34,7 +43,16 @@ class _Loader(yaml.SafeLoader):
         return super().compose_node(parent, index)
 
     def construct_mapping(self, node, deep=False):
-        """要求映射键为唯一字符串。"""
+        """要求映射键为唯一字符串。
+
+        Args:
+            node: 待构造的 YAML 映射节点。
+            deep: 是否立即构造嵌套对象。
+        Returns:
+            由 SafeLoader 构造的映射。
+        Raises:
+            ConstructorError: 键不是字符串、使用合并键或出现重复键。
+        """
         keys: set[str] = set()
         for key_node, _ in node.value:
             if key_node.tag != "tag:yaml.org,2002:str":
